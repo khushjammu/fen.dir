@@ -141,17 +141,17 @@ class ReverbSearch():
 
         self.product_list = returned_json['listings']
 
-        count = 0
-        while 'next' in returned_json['_links'] and count < 10:
-            response = self.session.get(returned_json['_links']['next']['href'], headers={'Accept-Version': "3.0"}).text
-            try:
-                returned_json = json.loads(response)
-            except TypeError as e:
-                print(response, response.text)
-                raise e
-            self.product_list.extend(returned_json['listings'])
-            print(returned_json['_links'])
-            count += 1
+        # count = 0
+        # while 'next' in returned_json['_links'] and count < 10:
+        #     response = self.session.get(returned_json['_links']['next']['href'], headers={'Accept-Version': "3.0"}).text
+        #     try:
+        #         returned_json = json.loads(response)
+        #     except TypeError as e:
+        #         print(response, response.text)
+        #         raise e
+        #     self.product_list.extend(returned_json['listings'])
+        #     print(returned_json['_links'])
+        #     count += 1
 
 
     def calculate_avg_price(self):
@@ -160,11 +160,13 @@ class ReverbSearch():
         prices = []
 
         for p_itr in self.product_list:
-            print(p_itr)
-            exit()
+            # print(p_itr)
             p = ReverbProduct()
             p.load_from_json(p_itr)
+            # print(p.categories)
+            # exit()/
 
+            if not self.is_listing_valid(p):
             if (self.color not in p.description and self.color not in p.title and self.color not in p.make and self.color not in p.finish):
                 continue
 
@@ -175,6 +177,13 @@ class ReverbSearch():
 
         print("=" * 25)
         print("AVERAGE PRICE: ${}".format(sum/count))
+
+    def is_listing_valid(self, product_object):
+        if "Electric Guitar" not in 
+        
+        
+
+
 
 
         # sum = 0
