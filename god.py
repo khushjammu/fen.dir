@@ -66,6 +66,7 @@ class ReverbProduct(Product):
         self.has_inventory = json_object['has_inventory']
         self.listing_currency = json_object['listing_currency']
         self.state = json_object['state']
+        self.categories = [x['full_name'] for x in json_object['categories']]
 
 class CarousellSearch():
     def __init__(self, query=None, number_of_results=22):
