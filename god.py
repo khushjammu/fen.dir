@@ -7,12 +7,21 @@ todos:
 - better filtering (if you cut out products too expensive sometimes makes irrelevant junk come up)
 - look at the rest of info returned by carousell (not just results) and see if anything interesting
 - use keyword discarding (ex: if 'pedal' in post discard)
+
+goal:
+- find undervalued listings
 '''
 
 import os, json
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
+
+# this is plotly -- seems cool but yet to implement anywhere
+# import plotly.express as px
+
 import numpy as np
 import requests as r
+
+print("warning: the matplotlib import was disabled to speed up debugging. uncomment it if you want to generate histograms")
 
 class Product(object):
     def __init__(self):
@@ -127,31 +136,40 @@ class CarousellSearch():
         plt.show()
         
 class ReverbSearch():
-    def __init__(self, query=None, number_of_results=22, color="black"):
+    def __init__(self, query=None, number_of_results=22, number_of_pages = 3, color="black", using_local=True):
         self.query = query
         self.color = color
 
         self.session = r.session()
         
         payload={'query': 'Fender Stratocaster'}
-        
-        response = self.session.get('https://api.reverb.com/api/listings/all', headers={'Accept-Version': "3.0"}, params=payload).text
 
-        returned_json = json.loads(response)
+        if using_local:
+            print("USING LOCAL CACHE")
+            returned_json = json.loads(open("cached_returned_json", "r").read())
 
-        self.product_list = returned_json['listings']
+            self.product_list = returned_json['listings']
+            # -- this snippet was used to write the data initially --
+            # f = open("cached_returned_json", "w")
+            # f.write(json.dumps(returned_json))
+            # f.close()
+        else:
+            print("USING LIVE DATA")
+            response = self.session.get('https://api.reverb.com/api/listings/all', headers={'Accept-Version': "3.0"}, params=payload).text
+            returned_json = json.loads(response)
+            self.product_list = returned_json['listings']
 
-        # count = 0
-        # while 'next' in returned_json['_links'] and count < 10:
-        #     response = self.session.get(returned_json['_links']['next']['href'], headers={'Accept-Version': "3.0"}).text
-        #     try:
-        #         returned_json = json.loads(response)
-        #     except TypeError as e:
-        #         print(response, response.text)
-        #         raise e
-        #     self.product_list.extend(returned_json['listings'])
-        #     print(returned_json['_links'])
-        #     count += 1
+            count = 0
+            while 'next' in returned_json['_links'] and count < number_of_pages:
+                response = self.session.get(returned_json['_links']['next']['href'], headers={'Accept-Version': "3.0"}).text
+                try:
+                    returned_json = json.loads(response)
+                except TypeError as e:
+                    print(response, response.text)
+                    raise e
+                self.product_list.extend(returned_json['listings'])
+                print(returned_json['_links'])
+                count += 1
 
 
     def calculate_avg_price(self):
@@ -163,12 +181,10 @@ class ReverbSearch():
             # print(p_itr)
             p = ReverbProduct()
             p.load_from_json(p_itr)
-            # print(p.categories)
-            # exit()/
 
-            if not self.is_listing_valid(p):
-            if (self.color not in p.description and self.color not in p.title and self.color not in p.make and self.color not in p.finish):
-                continue
+            validation_checks = {}
+
+            if not self.is_listing_valid(p, custom_validation=validation_checks) or p.price > 5000: continue
 
             print(p.title, ": ", p.price)
             prices.append(p.price)
@@ -178,33 +194,44 @@ class ReverbSearch():
         print("=" * 25)
         print("AVERAGE PRICE: ${}".format(sum/count))
 
-    def is_listing_valid(self, product_object):
-        if "Electric Guitar" not in 
-        
-        
+        # not generating histogram to speed up debugging
+        # self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
 
+    def is_listing_valid(self, product_object, custom_validation=None):
+        # category validation
+        valid_category = False
+        for category in product_object.categories:
+            if "Electric Guitars" in category:
+                valid_category = True
+        if not valid_category: return False
 
+        # color validation
+        # are there a finite amount of colors? make an array and search to make sure rest aren't in desc. if so
+        if product_object.finish == "": 
+            if self.color not in product_object.description.lower(): return False
+        else:
+            # can be more robust: strip whitespace?
+            if self.color not in product_object.finish.lower(): return False
 
+        # is valid if no error caught before — no custom validation
+        if not custom_validation: return True
 
-        # sum = 0
-        # count = 0
-        # prices = []
-        # for product_json in self.product_list: 
-            # product = CarousellProduct()
-            # product.load_from_json(product_json)
+        # custom validation
+        ''' ALL LOWERCASE
+        {'place_of_manufacturing': ['made in mexico', 'mim'], 'year_manufactured': ['2012']}
+        '''
 
-            # if product.price == 0:
-                # continue # skip all fake entries
+        for validation_label in custom_validation:
+            print("performing custom validation!")
+            # iterates through each variation of keyphrase (e.g. 'made in mexico', 'mim') and
+            # then if at least one is found, then it's validated, so we toggle the flag appropriately
+            validated = False
+            for phrase in custom_validation[validation_label]:
+                if phrase in product_object.description or phrase in product_object.title: validated = True
+            if not validated: return False
 
-            # print(product.title, ": ", product.price)
-            # sum += product.price
-            # count += 1
-            # prices.append(product.price)
-
-        # print("=" * 25)
-        # print("AVERAGE PRICE: ${}".format(sum/count))
-
-        self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
+        # is valid if no error caught before
+        return True
 
 
     def generate_histogram(self, data, xlabel, ylabel, title):
