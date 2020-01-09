@@ -135,9 +135,12 @@ class CarousellSearch():
         plt.ylim(ymax=np.ceil(maxfreq / 10) * 10 if maxfreq % 10 else maxfreq + 10)
         plt.show()
         
+# ReverbSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
+
 class ReverbSearch():
-    def __init__(self, query=None, number_of_results=22, number_of_pages = 3, color="black", using_local=True):
-        self.query = query
+    def __init__(self, query_string=None, color=None, make=None,
+        number_of_results=22, number_of_pages = 3, using_local=True):
+        self.query = query_string
         self.color = color
 
         self.session = r.session()
@@ -247,6 +250,12 @@ class ReverbSearch():
         # Set a clean upper y-axis limit.
         plt.ylim(ymax=np.ceil(maxfreq / 10) * 10 if maxfreq % 10 else maxfreq + 10)
         plt.show()
+
+## TODO: define this function that takes search parameters and makes reverb + carousell searches
+## will be used for Flask -- when React sends the request, so it should return the appropriate
+## data that Flask requires/wants
+def search():
+    pass
 
 ReverbSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
 # CarousellSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
