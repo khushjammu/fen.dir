@@ -13,13 +13,11 @@ goal:
 '''
 
 import os, json
-# import matplotlib.pyplot as plt
-
-# this is plotly -- seems cool but yet to implement anywhere
-# import plotly.express as px
-
 import numpy as np
 import requests as r
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 print("warning: the matplotlib import was disabled to speed up debugging. uncomment it if you want to generate histograms")
 
@@ -76,8 +74,12 @@ class ReverbProduct(Product):
         self.listing_currency = json_object['listing_currency']
         self.state = json_object['state']
         self.categories = [x['full_name'] for x in json_object['categories']]
+        self.links = json_object['_links']
 
 class CarousellSearch():
+    '''
+    TODO: add documentation + make this fire like Reverb
+    '''
     def __init__(self, query=None, number_of_results=22):
         self.query = query
         command_string = "curl -i -s -k -X $'POST' -H $'Host: sg.carousell.com' -H $'Connection: close' -H $'Content-Length: 110' -H $'y-X-Request-ID: QQCiHsizJ2MsUbsT' -H $'Origin: https://sg.carousell.com' -H $'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36' -H $'Content-Type: application/json' -H $'Accept: */*' -H $'Sec-Fetch-Site: same-origin' -H $'Sec-Fetch-Mode: cors' -H $'Referer: https://sg.carousell.com/search/fender%20black%20stratocaster' -H $'Accept-Encoding: gzip, deflate' -H $'Accept-Language: en,en-US;q=0.9,ms;q=0.8' \
@@ -135,35 +137,53 @@ class CarousellSearch():
         plt.ylim(ymax=np.ceil(maxfreq / 10) * 10 if maxfreq % 10 else maxfreq + 10)
         plt.show()
         
-# ReverbSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
-
 class ReverbSearch():
-    def __init__(self, query_string=None, color=None, make=None,
-        number_of_results=22, number_of_pages = 3, using_local=True):
+    '''
+    This is the class for a Reverb search. Every search should have its own instance.
+    There are several functions to assist with development, and they start with an
+    underscore.
+
+    EX: 
+    ReverbSearch("fender stratocaster", number_of_results=50, number_of_pages=5, 
+        additional_filters={'color': 'sunburst'}, 
+        debug_keys={'using_local': True, 'print_links': True, 'print_histogram': False}).calculate_avg_price()
+    '''
+    def __init__(self, query_string=None, additional_filters={}, search_params={'number_of_results': 22, 'number_of_pages': 3}, 
+        debug_keys={'using_local': False, 'print_links': False, 'print_histogram': False}):
+        '''
+        The constructor is responsible for scraping the list of products for a given query, 
+        and initialising appropriate instance variables. 
+        '''
+        self.debug_keys = debug_keys
+        self.search_params = search_params
+
         self.query = query_string
-        self.color = color
+        self.color = additional_filters['color'] if 'color' in additional_filters.keys() else None
 
         self.session = r.session()
-        
-        payload={'query': 'Fender Stratocaster'}
 
-        if using_local:
+        payload = additional_filters
+        payload['query'] = self.query
+        if 'number_of_results' in search_params.keys(): payload['per_page'] = search_params['number_of_results']
+
+        if self.debug_keys['using_local']:
             print("USING LOCAL CACHE")
-            returned_json = json.loads(open("cached_returned_json", "r").read())
+            self.product_list = eval(open("cached_product_list", "r").read())
 
-            self.product_list = returned_json['listings']
             # -- this snippet was used to write the data initially --
-            # f = open("cached_returned_json", "w")
-            # f.write(json.dumps(returned_json))
+            # f = open("cached_product_list", "w")
+            # f.write(str(self.product_list))
             # f.close()
         else:
             print("USING LIVE DATA")
+
+            # DOCS: https://www.any-api.com/reverb_com/reverb_com/docs/_listings_all/GET
             response = self.session.get('https://api.reverb.com/api/listings/all', headers={'Accept-Version': "3.0"}, params=payload).text
             returned_json = json.loads(response)
             self.product_list = returned_json['listings']
 
             count = 0
-            while 'next' in returned_json['_links'] and count < number_of_pages:
+            while 'next' in returned_json['_links'] and count < search_params['number_of_pages']:
                 response = self.session.get(returned_json['_links']['next']['href'], headers={'Accept-Version': "3.0"}).text
                 try:
                     returned_json = json.loads(response)
@@ -171,17 +191,11 @@ class ReverbSearch():
                     print(response, response.text)
                     raise e
                 self.product_list.extend(returned_json['listings'])
-                print(returned_json['_links'])
                 count += 1
 
-
-    def calculate_avg_price(self):
-        sum = 0
-        count = 0
-        prices = []
-
+    def return_filtered_listings(self):
+        valid_products = []
         for p_itr in self.product_list:
-            # print(p_itr)
             p = ReverbProduct()
             p.load_from_json(p_itr)
 
@@ -190,6 +204,35 @@ class ReverbSearch():
             if not self.is_listing_valid(p, custom_validation=validation_checks) or p.price > 5000: continue
 
             print(p.title, ": ", p.price)
+            if self.debug_keys['print_links']: print(p.links['web'])
+
+            valid_products.append(p_itr)
+
+        return valid_products
+
+
+    def calculate_avg_price(self):
+        '''
+        This function filters out listings using `self.is_listing_valid()` and then
+        calculates an average price. Prints appropriate info and generates histogram
+        if the flag says to. 
+        '''
+        sum = 0
+        count = 0
+        prices = []
+
+        for p_itr in self.product_list:
+            p = ReverbProduct()
+            p.load_from_json(p_itr)
+
+            validation_checks = {}
+
+            if not self.is_listing_valid(p, custom_validation=validation_checks) or p.price > 5000: continue
+
+
+            print(p.title, ": ", p.price)
+            if self.debug_keys['print_links']: print(p.links['web'])
+
             prices.append(p.price)
             sum += p.price
             count += 1
@@ -197,10 +240,17 @@ class ReverbSearch():
         print("=" * 25)
         print("AVERAGE PRICE: ${}".format(sum/count))
 
-        # not generating histogram to speed up debugging
-        # self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
+        if self.debug_keys['print_histogram'] == True: 
+            import matplotlib.pyplot as plt
+            self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
 
     def is_listing_valid(self, product_object, custom_validation=None):
+        '''
+        Function for filtering irrelevant listings. Category and color have a nonstandard 
+        validation so they get their own clauses. The rest in `custom_validation` use 
+        simple string matching in the description.
+        '''
+
         # category validation
         valid_category = False
         for category in product_object.categories:
@@ -210,11 +260,13 @@ class ReverbSearch():
 
         # color validation
         # are there a finite amount of colors? make an array and search to make sure rest aren't in desc. if so
-        if product_object.finish == "": 
-            if self.color not in product_object.description.lower(): return False
-        else:
-            # can be more robust: strip whitespace?
-            if self.color not in product_object.finish.lower(): return False
+
+        if self.color:
+            if product_object.finish == "": 
+                if self.color not in product_object.description.lower(): return False
+            else:
+                # can be more robust: strip whitespace?
+                if self.color not in product_object.finish.lower(): return False
 
         # is valid if no error caught before — no custom validation
         if not custom_validation: return True
@@ -236,8 +288,11 @@ class ReverbSearch():
         # is valid if no error caught before
         return True
 
-
     def generate_histogram(self, data, xlabel, ylabel, title):
+        '''
+        Generates a histogram of an array of `data`, which we assume is of prices. Shouldn't
+        be necessary since using React front-end, but it's here just in case. 
+        '''
         # https://realpython.com/python-histograms/
         n, bins, patches = plt.hist(x=data, bins='auto', color='#0504aa',
                                     alpha=0.7, rwidth=0.85)
@@ -251,11 +306,74 @@ class ReverbSearch():
         plt.ylim(ymax=np.ceil(maxfreq / 10) * 10 if maxfreq % 10 else maxfreq + 10)
         plt.show()
 
+    def _print_single_listing_json(self):
+        '''
+        Prints first item in product_list array. For development, when the JSON for a single
+        listing is required
+        '''
+        print(self.product_list[0])
+
+
 ## TODO: define this function that takes search parameters and makes reverb + carousell searches
 ## will be used for Flask -- when React sends the request, so it should return the appropriate
 ## data that Flask requires/wants
 def search():
     pass
 
-ReverbSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
+'''
+Example working request:
+
+POST /find_guitar HTTP/1.1
+Host: localhost:5000
+Content-Type: application/json
+Cache-Control: no-cache
+Postman-Token: 3d7bd5be-5112-8ca5-4596-3ee645e9f715
+
+{
+    "query_string": "fender stratocaster",
+    "additional_filters": {"color": "sunburst"},
+    "search_params": {"number_of_results": 22, "number_of_pages": 3},
+    "debug_keys": {"using_local": true, "print_links": true, "print_histogram": false}
+}
+'''
+
+
+@app.route('/find_guitar', methods=['POST'])
+def generate_text():
+    request_type = request.content_type
+    if request_type == 'application/json':
+        req_json = request.get_json()
+    elif 'multipart/form-data' in request_type:
+        req_json = request.form.to_dict()
+    else:
+        # WORKING
+        return_data = {'id': set_id, 'status': 'error', 'message': 'request content type incorrect', "request_type": request_type}
+        log_request(return_data, set_id)
+        return jsonify(return_data)
+
+    return_data = {}
+    return_data["request_json"] = req_json
+    
+    # PERFORM THE SEARCH
+    reverb_search = ReverbSearch(req_json["query_string"], additional_filters=req_json["additional_filters"], 
+        search_params=req_json["search_params"], debug_keys=req_json["debug_keys"])
+    # reverb_search = ReverbSearch(req_json["query_string"], number_of_results=50, number_of_pages=3, 
+    #     additional_filters={'color': 'sunburst'}, 
+    #     debug_keys={'using_local': True, 'print_links': True, 'print_histogram': False})
+
+    data = {}
+    data["filtered_listings"] = reverb_search.return_filtered_listings()
+
+    return_data["data"] = data
+    return_data["status"] = "success"
+
+    return jsonify(data)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", debug=True)
+
+# ReverbSearch("fender stratocaster", number_of_results=50, number_of_pages=5, 
+    # additional_filters={'color': 'sunburst'}, 
+    # debug_keys={'using_local': True, 'print_links': True, 'print_histogram': False}).calculate_avg_price()
+
 # CarousellSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
