@@ -1,26 +1,22 @@
 '''
-todos:
-- add ability get more than 50 items (currently maxes out then)
-- add better searching logic: specify search object (includes color, make, manufacturer) which is then used to construct custom queries for Carousell and Reverb
-- add reverb searching
-- better histogram plotting: doesn't handle outliers too well at the moment (axis gets all funny)
-- better filtering (if you cut out products too expensive sometimes makes irrelevant junk come up)
-- look at the rest of info returned by carousell (not just results) and see if anything interesting
-- use keyword discarding (ex: if 'pedal' in post discard)
-
-goal:
-- find undervalued listings
+MISC TODOS:
+- parallelize network calls (scraping)
 '''
 
-import os, json
-import numpy as np
+import os, json, re, statistics, urllib3
 import requests as r
 from flask import Flask, request, jsonify
+from sklearn.cluster import KMeans
+import numpy as np
 
 app = Flask(__name__)
-
+urllib3.disable_warnings()
 print("warning: the matplotlib import was disabled to speed up debugging. uncomment it if you want to generate histograms")
 
+'''
+Product classes used to store data for individual products or listings
+from both Reverb and Carousell. TODO: remove base class?
+'''
 class Product(object):
     def __init__(self):
         self.title = ""
@@ -33,30 +29,49 @@ class CarousellProduct(Product):
         super(Product, self).__init__()
         self.likes = ""
 
+    def fetch_product_data(self, search_listing_json):
+        '''
+        Extracts listing ID from search results, requests Carousell's API
+        for that specific listing info, and then uses it to load the product. 
+        '''
+
+        product_id = search_listing_json['listingCard']['id']
+
+        headers = {
+            'authority': 'sg.carousell.com',
+            'y-platform': 'web',
+            'y-accept-language': 'en',
+            'y-build-no': '2',
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.117 Safari/537.36',
+            'content-type': 'application/json',
+            'accept': '*/*',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-mode': 'cors',
+            'referer': 'https://sg.carousell.com/p/fender-japan-strat-272425486?t-id=3755337_1577951790910&t-referrer_browse_type=search_results&t-referrer_request_id=Zc9-YP7SjnULa_ms&t-referrer_search_query=fender&t-referrer_sort_by=popular',
+            'accept-encoding': 'gzip, deflate, br',
+            'accept-language': 'en,en-US;q=0.9,ms;q=0.8',
+            'cookie': '__cfduid=db5ce03256b89cd9bf2180e8ce47ac8001548561275; ffid=sp2ikhIC7-p9DhYe; backend_feature_flag_id=tex7sjdjJAbPl8GfipzHUpZ23Yj8DuZQhBVc; gtkprId=mPigJCYio95zIMTk; _csrf=38VmEktJ2Hbzt4_FlmtoTlK6; _t2=cmyT-Ahsp0; __stripe_mid=0917a744-d1e5-4d68-9d3e-cb5f77ccec31; redirect=redirect; akamaru_session=51GgQy4sL45KMOazoiFKAcTUqooCd6vMhjBz; auth-session=51GgQy4sL45KMOazoiFKAcTUqooCd6vMhjBz; _t=t%3D1577951790910%26u%3D3755337; cf_use_ob=0; latra=1578787200000',
+            'if-none-match': 'W/"3bbe-0OodRBk3jtomFlIGV2EvDrqFcwE"',
+        }
+
+        response = r.get('https://sg.carousell.com/api-service/listing/3.1/listings/{}/detail/'.format(product_id), headers=headers, verify=False)
+
+        j = json.loads(response.text)
+        # print(j['data'])
+        self.load_from_json(j)
+
+
     def load_from_json(self, json_object):
-        self.title = json_object['listingCard']['belowFold'][0]['stringContent']
-        self.price = float(json_object['listingCard']['belowFold'][1]['stringContent'].replace("S", "").replace("$", "").replace(",", ""))
-        self.description = json_object['listingCard']['belowFold'][2]['stringContent']
-        self.new_or_used = json_object['listingCard']['belowFold'][3]['stringContent']
-        self.likes = json_object['listingCard']['likesCount']
+        self.title = json_object['data']['screens'][0]['meta']['default_value']['title']
+        self.price = float(json_object['data']['screens'][0]['meta']['default_value']['price'])
+        self.description = json_object['data']['screens'][0]['meta']['default_value']['description']
+        self.is_popular = json_object['data']['screens'][0]['meta']['default_value']['is_popular']
+        self.likes = int(json_object['data']['screens'][0]['meta']['default_value']['likes_count'])
+        self.url = re.search("(?P<url>https?://[^\s]+)", json_object['data']['screens'][0]['meta']['share_text']).group("url")
 
 class ReverbProduct(Product): 
     def __init__(self):
         super(Product, self).__init__()
-        # self.id
-        # self.make
-        # self.model
-        # self.finish
-        # self.year
-        # self.title
-        # self.description
-        # self.condition
-        # self.price
-        # self.buyer_price
-        # self.inventory
-        # self.has_inventory
-        # self.listing_currency
-        # self.state
 
     def load_from_json(self, json_object):
         self.id = json_object['id']
@@ -67,7 +82,7 @@ class ReverbProduct(Product):
         self.title = json_object['title']
         self.description = json_object['description']
         self.condition = json_object['condition']
-        self.price = float(json_object['price']['amount'])
+        self.price = float(json_object['price']['amount']) * 1.35
         self.buyer_price = json_object['buyer_price']
         self.inventory = json_object['inventory']
         self.has_inventory = json_object['has_inventory']
@@ -76,55 +91,160 @@ class ReverbProduct(Product):
         self.categories = [x['full_name'] for x in json_object['categories']]
         self.links = json_object['_links']
 
+'''
+Search classes for Carousell and Reverb. They work slightly differently
+owing to the underlying platform differences (so no common base class). 
+'''
 class CarousellSearch():
     '''
-    TODO: add documentation + make this fire like Reverb
+    This is the class for a Carousell search. Every search should have its own instance.
+    There are several functions to assist with development, and they start with an
+    underscore. Carousell is a lot more finicky than Reverb so additional keyword tweaking
+    and exclusion might be needed to get a good result. 
+
+    EX:
+    a = CarousellSearch("fender stratocaster", additional_filters={"brand": "fender", "model": "stratocaster"})
+    a.find_undervalued_listings()
     '''
-    def __init__(self, query=None, number_of_results=22):
-        self.query = query
-        command_string = "curl -i -s -k -X $'POST' -H $'Host: sg.carousell.com' -H $'Connection: close' -H $'Content-Length: 110' -H $'y-X-Request-ID: QQCiHsizJ2MsUbsT' -H $'Origin: https://sg.carousell.com' -H $'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36' -H $'Content-Type: application/json' -H $'Accept: */*' -H $'Sec-Fetch-Site: same-origin' -H $'Sec-Fetch-Mode: cors' -H $'Referer: https://sg.carousell.com/search/fender%20black%20stratocaster' -H $'Accept-Encoding: gzip, deflate' -H $'Accept-Language: en,en-US;q=0.9,ms;q=0.8' \
-            --data-binary $'{\"count\":COUNTPLACEHOLDER,\"countryId\":\"1880251\",\"filters\":[],\"locale\":\"en\",\"prefill\":{},\"query\":\"QUERYPLACEHOLDER\"}' \
-            $'https://sg.carousell.com/api-service/filter/search/3.3/products/' --output carouselloutputfile  --compressed"
-        
-        command_string = command_string.replace("QUERYPLACEHOLDER", query)
-        command_string = command_string.replace("COUNTPLACEHOLDER", str(number_of_results))
-        print(command_string)
-        print(os.system(command_string))
 
-        f = open('carouselloutputfile', 'r')
-        dumped_product_list = f.read().split('\n')[-1]
-        f.close()
+    def __init__(self, query_string=None, additional_filters={'brand': ''}, search_params={'number_of_results': 22, 'number_of_pages': 3}, 
+        debug_keys={'using_local': False, 'print_links': False, 'print_histogram': False}):
+        self.products = []
 
-        self.returned_json = json.loads(dumped_product_list)
+        self.debug_keys = debug_keys
+        self.search_params = search_params
+
+        self.query = query_string
+        self.color = additional_filters['color'] if 'color' in additional_filters.keys() else None
+        self.brand = additional_filters['brand']
+
+        self.prices = None
+        self.mean_price = None
+
+        headers = {
+            'Host': 'sg.carousell.com',
+            'Connection': 'close',
+            'Content-Length': '110',
+            'y-X-Request-ID': 'QQCiHsizJ2MsUbsT',
+            'Origin': 'https://sg.carousell.com',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36',
+            'Content-Type': 'application/json',
+            'Accept': '*/*',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Referer': 'https://sg.carousell.com/search/fender%20black%20stratocaster',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'en,en-US;q=0.9,ms;q=0.8',
+        }
+
+        data = {
+            "count": self.search_params['number_of_results'], 
+            "countryId": "1880251",
+            "filters": [{"fieldName":"collections","idsOrKeywords":{"value":["233"]}}],
+            "locale": "en",
+            "prefill": {}, 
+            "query": self.query
+        }
+
+        response = r.post('https://sg.carousell.com/api-service/filter/search/3.3/products/', headers=headers, data=json.dumps(data), verify=False)
+
+        self.returned_json = json.loads(response.text)
         self.product_list = self.returned_json['data']['results']
+        self.valid_product_list = self.validate_all_listings()
+        
+    def validate_all_listings(self):
+        '''
+        Return an array of all the valid listings received from Carousell. Works
+        as follows: loads all listings from JSON into custom CarousellProduct 
+        class from above -> filters individual listings using self.is_listing_valid()
+        -> TODO (strip too cheap to remove e.g "squire") -> return valid listings.
 
-        os.remove('carouselloutputfile')
+        Returns array of valid listings. 
+        '''
 
-
-    def calculate_avg_price(self):
-        sum = 0
-        count = 0
+        # first pass: remove the majority of bullshit listings
+        first_pass = []
         prices = []
-        for product_json in self.product_list: 
+        for product_json in self.product_list:
             product = CarousellProduct()
-            product.load_from_json(product_json)
+            product.fetch_product_data(product_json)
 
-            if product.price == 0:
+            if self.is_listing_valid(product):
                 continue # skip all fake entries
 
-            print(product.title, ": ", product.price)
-            sum += product.price
-            count += 1
+            first_pass.append(product)
             prices.append(product.price)
 
-        print("=" * 25)
-        print("AVERAGE PRICE: ${}".format(sum/count))
+        self.prices = prices
+        self.mean_price = statistics.mean(self.prices)
+        
+        # second pass: strip too low
+        '''
+        TODO: THIS LOGIC IS TOO SHAKY
 
-        self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
+        X = np.array(prices)
+        X = X.reshape(-1, 1)
 
+        kmeans = KMeans(n_clusters=4, random_state=0).fit(X)
+        # kmeans.labels_
+        second_pass = []
+
+        for listing in first_pass:
+            pass 
+            # add code that strips out the listings that are too cheap based on certain clusters
+
+        return valid_listings
+        '''
+        return first_pass
+
+    def find_undervalued_listings(self):
+        '''
+        Finds all listings below average price and prints them in ascending
+        order of price. 
+
+        Returns nothing but has print output. 
+        '''
+
+        print("AVERAGE PRICE: ${}".format(self.mean_price))
+
+        below_average_listings = [p for p in self.valid_product_list if p.price < (self.mean_price)]
+
+        sorted_below_average_listings = sorted(below_average_listings, key=lambda k: k.price) 
+
+
+        print("LISTINGS BELOW AVERAGE")
+        for product in sorted_below_average_listings:
+            if product.price < (self.mean_price): print(product.title, ": ", product.price, "({})".format(product.url))
+
+    def is_listing_valid(self, product_object, custom_validation=None):
+        '''
+        Function for filtering irrelevant listings. Category and color have a nonstandard 
+        validation so they get their own clauses. The rest in `custom_validation` use 
+        simple string matching in the description.
+
+        Returns True if valid, False if not. 
+        '''
+        # 0 price removal
+        if product_object.price == 0: return False
+
+        # brand filtering
+        brands = ["Gibson", "Fender", "PRS", "G&L", "Rickenbacker", "Ibanez", "ESP", "Jackson", "Schecter", "Epiphone", "Martin", "Taylor", "Guild", "Seagull", "Yamaha", "Ovation", "Washburn"]
+        for word in product_object.title.split(" "):
+            if word in brands:
+                if word != self.brand: return False
+
+        # is valid if no error caught before
+        return True
 
     def generate_histogram(self, data, xlabel, ylabel, title):
-        # https://realpython.com/python-histograms/
+        '''
+        DEPRECATED. Generates histogram of prices using matplotlib. Sample
+        usage: self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
+        Taken from: https://realpython.com/python-histograms/.
+
+        Returns nothing but displays figure. 
+        '''
+
         n, bins, patches = plt.hist(x=data, bins='auto', color='#0504aa',
                                     alpha=0.7, rwidth=0.85)
         plt.grid(axis='y', alpha=0.75)
@@ -141,7 +261,8 @@ class ReverbSearch():
     '''
     This is the class for a Reverb search. Every search should have its own instance.
     There are several functions to assist with development, and they start with an
-    underscore.
+    underscore. TODO: copy function structure (e.g. find_undervalued_listings) from
+    Carousell. 
 
     EX: 
     ReverbSearch("fender stratocaster", number_of_results=50, number_of_pages=5, 
@@ -154,6 +275,8 @@ class ReverbSearch():
         The constructor is responsible for scraping the list of products for a given query, 
         and initialising appropriate instance variables. 
         '''
+        self.products = []
+
         self.debug_keys = debug_keys
         self.search_params = search_params
 
@@ -229,16 +352,26 @@ class ReverbSearch():
 
             if not self.is_listing_valid(p, custom_validation=validation_checks) or p.price > 5000: continue
 
-
-            print(p.title, ": ", p.price)
+            # print(p.title, ": ", p.price)
             if self.debug_keys['print_links']: print(p.links['web'])
 
+            self.products.append(p)
             prices.append(p.price)
             sum += p.price
             count += 1
 
         print("=" * 25)
         print("AVERAGE PRICE: ${}".format(sum/count))
+
+        below_average_listings = [p for p in self.products if p.price < (sum/count)]
+
+        sorted_below_average_listings = sorted(below_average_listings, key=lambda k: k.price) 
+
+
+        print("LISTINGS BELOW AVERAGE")
+        for product in sorted_below_average_listings:
+            if product.price < (sum/count): print(product.title, ": ", product.price, "({})".format(product.links['web']['href']))
+
 
         if self.debug_keys['print_histogram'] == True: 
             import matplotlib.pyplot as plt
@@ -313,33 +446,24 @@ class ReverbSearch():
         '''
         print(self.product_list[0])
 
-
-## TODO: define this function that takes search parameters and makes reverb + carousell searches
-## will be used for Flask -- when React sends the request, so it should return the appropriate
-## data that Flask requires/wants
-def search():
-    pass
-
-'''
-Example working request:
-
-POST /find_guitar HTTP/1.1
-Host: localhost:5000
-Content-Type: application/json
-Cache-Control: no-cache
-Postman-Token: 3d7bd5be-5112-8ca5-4596-3ee645e9f715
-
-{
-    "query_string": "fender stratocaster",
-    "additional_filters": {"color": "sunburst"},
-    "search_params": {"number_of_results": 22, "number_of_pages": 3},
-    "debug_keys": {"using_local": true, "print_links": true, "print_histogram": false}
-}
-'''
-
-
 @app.route('/find_guitar', methods=['POST'])
 def generate_text():
+    '''
+    Example working request:
+
+    POST /find_guitar HTTP/1.1
+    Host: localhost:5000
+    Content-Type: application/json
+    Cache-Control: no-cache
+    Postman-Token: 3d7bd5be-5112-8ca5-4596-3ee645e9f715
+
+    {
+        "query_string": "fender stratocaster",
+        "additional_filters": {"color": "sunburst"},
+        "search_params": {"number_of_results": 22, "number_of_pages": 3},
+        "debug_keys": {"using_local": true, "print_links": true, "print_histogram": false}
+    }
+    '''
     request_type = request.content_type
     if request_type == 'application/json':
         req_json = request.get_json()
@@ -369,11 +493,13 @@ def generate_text():
 
     return jsonify(data)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", debug=True)
+# if __name__ == "__main__":
+    # app.run(host="0.0.0.0", debug=True)
 
-# ReverbSearch("fender stratocaster", number_of_results=50, number_of_pages=5, 
-    # additional_filters={'color': 'sunburst'}, 
-    # debug_keys={'using_local': True, 'print_links': True, 'print_histogram': False}).calculate_avg_price()
+# # 'color': 'sunburst'
+# ReverbSearch("fender stratocaster HSS floyd rose", search_params={'number_of_results':50, 'number_of_pages':3}, 
+#     additional_filters={'neck_material': ['maple'], 'color': 'sunburst'}, 
+#     debug_keys={'using_local': False, 'print_links': False, 'print_histogram': False}).calculate_avg_price()
 
-# CarousellSearch("fender black stratocaster", number_of_results=50).calculate_avg_price()
+a = CarousellSearch("fender stratocaster", additional_filters={"brand": "fender", "model": "stratocaster"})
+a.find_undervalued_listings()
