@@ -8,6 +8,7 @@ import requests as r
 from flask import Flask, request, jsonify
 from sklearn.cluster import KMeans
 import numpy as np
+import brotli # looks unused but requests needs it to decipher Carousell return data
 
 app = Flask(__name__)
 urllib3.disable_warnings()
@@ -501,5 +502,6 @@ def generate_text():
 #     additional_filters={'neck_material': ['maple'], 'color': 'sunburst'}, 
 #     debug_keys={'using_local': False, 'print_links': False, 'print_histogram': False}).calculate_avg_price()
 
-a = CarousellSearch("fender stratocaster", additional_filters={"brand": "fender", "model": "stratocaster"})
+a = CarousellSearch("charvel san dimas", additional_filters={"brand": "charvel", "model": "san dimas"})
 a.find_undervalued_listings()
+print(a.valid_product_list)
