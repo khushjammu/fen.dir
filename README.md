@@ -22,7 +22,7 @@ Place `fendir.py` in the same directory as your project files.
 from fendir import ReverbSearch, CarousellSearch
 ```
 
-#### Searching Reverb
+### Searching Reverb
 
 Reverb is an excellent marketplace, with high-quality listings and no keyword stuffing. You can, therefore, expect high-quality results from the Reverb search. 
 
@@ -32,12 +32,22 @@ ReverbSearch("fender stratocaster HSS floyd rose", search_params={'number_of_res
 ```
 
 
-#### Searching Carousell
+### Searching Carousell
 
 Carousell has far fewer features and more spammy listings (keyword stuffing) compared to Reverb. The search results are therefore not as good as they good be. 
 
 ```python
 CarousellSearch("fender stratocaster", additional_filters={"brand": "fender", "model": "stratocaster", "color": "black"}).find_undervalued_listings()
+```
+
+### Price Histogram
+
+You can display a rudimentary histogram using Matplotlib by passing the `debug_keys` keyword argument. Note: if you want to specify any of the `debug_keys`, you have to pass the complete dictionary. 
+
+```python
+ReverbSearch("fender stratocaster HSS floyd rose", search_params={'number_of_results':50, 'number_of_pages':3}, 
+    additional_filters={'neck_material': ['maple'], 'color': 'sunburst'},
+    debug_keys={'using_local': False, 'write_local': False, 'print_histogram': True, 'verbose': False}).find_undervalued_listings()
 ```
 
 ## Flask Server
