@@ -32,7 +32,7 @@ ReverbSearch("fender stratocaster HSS floyd rose", search_params={'number_of_res
 ```
 
 
-### Searching Carousell
+#### Searching Carousell
 
 Carousell has far fewer features and more spammy listings (keyword stuffing) compared to Reverb. The search results are therefore not as good as they good be. 
 
