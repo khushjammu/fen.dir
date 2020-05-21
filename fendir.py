@@ -1,3 +1,7 @@
+'''
+All the search and product classes are defined here. 
+'''
+
 import os, json, re, statistics, urllib3
 import requests as r
 from flask import Flask, request, jsonify

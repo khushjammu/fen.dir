@@ -1,3 +1,8 @@
+'''
+File containing example Flask server. This can be used as a starting point
+for a web frontend for the search classes.
+'''
+
 from flask import Flask, request, jsonify
 from fendir import ReverbSearch
 
