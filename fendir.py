@@ -9,7 +9,6 @@ from sklearn.cluster import KMeans
 import numpy as np
 import brotli # looks unused but requests needs it to decipher Carousell return data
 
-app = Flask(__name__)
 urllib3.disable_warnings()
 
 '''
@@ -394,6 +393,7 @@ class ReverbSearch():
         Generates a histogram of an array of `data`, which we assume is of prices. 
         '''
         # https://realpython.com/python-histograms/
+        import matplotlib.pyplot as plt
         n, bins, patches = plt.hist(x=data, bins='auto', color='#0504aa',
                                     alpha=0.7, rwidth=0.85)
         plt.grid(axis='y', alpha=0.75)
@@ -413,12 +413,3 @@ class ReverbSearch():
         '''
         print(self.product_list[0])
 
-
-# ReverbSearch("fender stratocaster HSS floyd rose", search_params={'number_of_results':50, 'number_of_pages':3}, 
-#     additional_filters={'neck_material': ['maple'], 'color': 'sunburst'}).find_undervalued_listings()
-
-# CarousellSearch("fender stratocaster", additional_filters={"brand": "fender", "model": "stratocaster", "color": "black"}).find_undervalued_listings()
-
-# CarousellSearch("charvel san dimas", additional_filters={"brand": "charvel", "model": "san dimas"}).find_undervalued_listings()
-# a.find_undervalued_listings()
-# print(a.valid_product_list)
