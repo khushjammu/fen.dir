@@ -1,8 +1,3 @@
-'''
-MISC TODOS:
-- parallelize network calls (scraping)
-'''
-
 import os, json, re, statistics, urllib3
 import requests as r
 from flask import Flask, request, jsonify
@@ -12,7 +7,6 @@ import brotli # looks unused but requests needs it to decipher Carousell return 
 
 app = Flask(__name__)
 urllib3.disable_warnings()
-print("warning: the matplotlib import was disabled to speed up debugging. uncomment it if you want to generate histograms")
 
 '''
 Product classes used to store data for individual products or listings
@@ -76,14 +70,14 @@ class ReverbProduct(Product):
 
     def load_from_json(self, json_object):
         self.id = json_object['id']
-        self.make = json_object['make']
-        self.model = json_object['model']
-        self.finish = json_object['finish']
+        self.make = json_object['make'].strip()
+        self.model = json_object['model'].strip()
+        self.finish = json_object['finish'].strip()
         self.year = json_object['year']
-        self.title = json_object['title']
-        self.description = json_object['description']
+        self.title = json_object['title'].strip()
+        self.description = json_object['description'].strip()
         self.condition = json_object['condition']
-        self.price = float(json_object['price']['amount']) * 1.35
+        self.price = round(float(json_object['price']['amount']) * 1.35, 2) # convert from USD to SGD and round to 2 d.p.
         self.buyer_price = json_object['buyer_price']
         self.inventory = json_object['inventory']
         self.has_inventory = json_object['has_inventory']
@@ -93,9 +87,10 @@ class ReverbProduct(Product):
         self.links = json_object['_links']
 
 '''
-Search classes for Carousell and Reverb. They work slightly differently
-owing to the underlying platform differences (so no common base class). 
+Search classes for Carousell and Reverb work slightly differently owing 
+to the underlying platform differences (so no common base class). 
 '''
+
 class CarousellSearch():
     '''
     This is the class for a Carousell search. Every search should have its own instance.
@@ -153,6 +148,26 @@ class CarousellSearch():
         self.product_list = self.returned_json['data']['results']
         self.valid_product_list = self.validate_all_listings()
         
+    def find_undervalued_listings(self):
+        '''
+        Finds all listings below average price and prints them in ascending
+        order of price. 
+
+        Returns nothing but has print output. 
+        '''
+
+        below_average_listings = [p for p in self.valid_product_list if p.price < (self.mean_price)]
+        sorted_below_average_listings = sorted(below_average_listings, key=lambda k: k.price) 
+
+        print("=" * 25)
+        print("AVERAGE PRICE: ${}".format(self.mean_price))
+        print("-" * 25)
+        print("LISTINGS BELOW AVERAGE:")
+        print("=" * 25)
+
+        for product in sorted_below_average_listings:
+            if product.price < (self.mean_price): print(product.title, ": ", product.price, "({})".format(product.url))
+
     def validate_all_listings(self):
         '''
         Return an array of all the valid listings received from Carousell. Works
@@ -163,61 +178,25 @@ class CarousellSearch():
         Returns array of valid listings. 
         '''
 
-        # first pass: remove the majority of bullshit listings
+        # first pass: remove the majority of BS listings
         first_pass = []
         prices = []
         for product_json in self.product_list:
             product = CarousellProduct()
             product.fetch_product_data(product_json)
 
-            if self.is_listing_valid(product):
+            if not self.is_listing_valid(product):
                 continue # skip all fake entries
 
             first_pass.append(product)
             prices.append(product.price)
 
         self.prices = prices
-        self.mean_price = statistics.mean(self.prices)
+        self.mean_price = round(statistics.mean(self.prices), 2)
         
-        # second pass: strip too low
-        '''
-        TODO: THIS LOGIC IS TOO SHAKY
-
-        X = np.array(prices)
-        X = X.reshape(-1, 1)
-
-        kmeans = KMeans(n_clusters=4, random_state=0).fit(X)
-        # kmeans.labels_
-        second_pass = []
-
-        for listing in first_pass:
-            pass 
-            # add code that strips out the listings that are too cheap based on certain clusters
-
-        return valid_listings
-        '''
         return first_pass
 
-    def find_undervalued_listings(self):
-        '''
-        Finds all listings below average price and prints them in ascending
-        order of price. 
-
-        Returns nothing but has print output. 
-        '''
-
-        print("AVERAGE PRICE: ${}".format(self.mean_price))
-
-        below_average_listings = [p for p in self.valid_product_list if p.price < (self.mean_price)]
-
-        sorted_below_average_listings = sorted(below_average_listings, key=lambda k: k.price) 
-
-
-        print("LISTINGS BELOW AVERAGE")
-        for product in sorted_below_average_listings:
-            if product.price < (self.mean_price): print(product.title, ": ", product.price, "({})".format(product.url))
-
-    def is_listing_valid(self, product_object, custom_validation=None):
+    def is_listing_valid(self, product_object):
         '''
         Function for filtering irrelevant listings. Category and color have a nonstandard 
         validation so they get their own clauses. The rest in `custom_validation` use 
@@ -232,7 +211,7 @@ class CarousellSearch():
         brands = ["Gibson", "Fender", "PRS", "G&L", "Rickenbacker", "Ibanez", "ESP", "Jackson", "Schecter", "Epiphone", "Martin", "Taylor", "Guild", "Seagull", "Yamaha", "Ovation", "Washburn"]
         for word in product_object.title.split(" "):
             if word in brands:
-                if word != self.brand: return False
+                if word.lower().strip() != self.brand.lower().strip(): return False
 
         # is valid if no error caught before
         return True
@@ -257,7 +236,7 @@ class CarousellSearch():
         # Set a clean upper y-axis limit.
         plt.ylim(ymax=np.ceil(maxfreq / 10) * 10 if maxfreq % 10 else maxfreq + 10)
         plt.show()
-        
+   
 class ReverbSearch():
     '''
     This is the class for a Reverb search. Every search should have its own instance.
@@ -270,15 +249,17 @@ class ReverbSearch():
         additional_filters={'color': 'sunburst'}, 
         debug_keys={'using_local': True, 'print_links': True, 'print_histogram': False}).calculate_avg_price()
     '''
-    def __init__(self, query_string=None, additional_filters={}, search_params={'number_of_results': 22, 'number_of_pages': 3}, 
-        debug_keys={'using_local': False, 'print_links': False, 'print_histogram': False}):
+    def __init__(self, query_string=None, additional_filters={}, search_params={'number_of_results': 22, 'number_of_pages': 3}, print_links=False,
+        debug_keys={'using_local': False, 'write_local': False, 'print_histogram': False, 'verbose': False}):
         '''
         The constructor is responsible for scraping the list of products for a given query, 
-        and initialising appropriate instance variables. 
+        and initialising appropriate instance variables. It does NOT find the undervalued 
+        listings.
         '''
         self.products = []
 
         self.debug_keys = debug_keys
+        self.print_links = print_links
         self.search_params = search_params
 
         self.query = query_string
@@ -290,16 +271,16 @@ class ReverbSearch():
         payload['query'] = self.query
         if 'number_of_results' in search_params.keys(): payload['per_page'] = search_params['number_of_results']
 
-        if self.debug_keys['using_local']:
-            print("USING LOCAL CACHE")
-            self.product_list = eval(open("cached_product_list", "r").read())
+        if self.debug_keys['write_local']:
+            f = open("cached_product_list", "w")
+            f.write(str(self.product_list))
+            f.close()
 
-            # -- this snippet was used to write the data initially --
-            # f = open("cached_product_list", "w")
-            # f.write(str(self.product_list))
-            # f.close()
+        if self.debug_keys['using_local']:
+            if debug_keys['verbose']: print("USING LOCAL CACHE")
+            self.product_list = eval(open("cached_product_list", "r").read())
         else:
-            print("USING LIVE DATA")
+            if debug_keys['verbose']: print("USING LIVE DATA")
 
             # DOCS: https://www.any-api.com/reverb_com/reverb_com/docs/_listings_all/GET
             response = self.session.get('https://api.reverb.com/api/listings/all', headers={'Accept-Version': "3.0"}, params=payload).text
@@ -317,25 +298,7 @@ class ReverbSearch():
                 self.product_list.extend(returned_json['listings'])
                 count += 1
 
-    def return_filtered_listings(self):
-        valid_products = []
-        for p_itr in self.product_list:
-            p = ReverbProduct()
-            p.load_from_json(p_itr)
-
-            validation_checks = {}
-
-            if not self.is_listing_valid(p, custom_validation=validation_checks) or p.price > 5000: continue
-
-            print(p.title, ": ", p.price)
-            if self.debug_keys['print_links']: print(p.links['web'])
-
-            valid_products.append(p_itr)
-
-        return valid_products
-
-
-    def calculate_avg_price(self):
+    def find_undervalued_listings(self):
         '''
         This function filters out listings using `self.is_listing_valid()` and then
         calculates an average price. Prints appropriate info and generates histogram
@@ -351,31 +314,31 @@ class ReverbSearch():
 
             validation_checks = {}
 
-            if not self.is_listing_valid(p, custom_validation=validation_checks) or p.price > 5000: continue
-
-            # print(p.title, ": ", p.price)
-            if self.debug_keys['print_links']: print(p.links['web'])
+            if not self.is_listing_valid(p, custom_validation=validation_checks): continue
 
             self.products.append(p)
             prices.append(p.price)
             sum += p.price
             count += 1
 
-        print("=" * 25)
-        print("AVERAGE PRICE: ${}".format(sum/count))
-
         below_average_listings = [p for p in self.products if p.price < (sum/count)]
-
         sorted_below_average_listings = sorted(below_average_listings, key=lambda k: k.price) 
 
-
-        print("LISTINGS BELOW AVERAGE")
+        print("=" * 25)
+        print("AVERAGE PRICE: ${}".format(round(sum/count, 2)))
+        print("-" * 25)
+        print("LISTINGS BELOW AVERAGE:")
+        print("=" * 25)
         for product in sorted_below_average_listings:
-            if product.price < (sum/count): print(product.title, ": ", product.price, "({})".format(product.links['web']['href']))
-
+            
+            if product.price < (sum/count):
+                # TODO: use tabs to make this print prettier
+                o = product.title + ": " + str(product.price)
+                if self.print_links: o += " ({})".format(product.links['web']['href'])
+                print(o)
 
         if self.debug_keys['print_histogram'] == True: 
-            import matplotlib.pyplot as plt
+            import matplotlib.pyplot as plt # conditionally import b/c it slows down a lot otherwise
             self.generate_histogram(prices, "Price", "Frequency", "Price/Frequency Histogram: {}".format(self.query))
 
     def is_listing_valid(self, product_object, custom_validation=None):
@@ -424,8 +387,7 @@ class ReverbSearch():
 
     def generate_histogram(self, data, xlabel, ylabel, title):
         '''
-        Generates a histogram of an array of `data`, which we assume is of prices. Shouldn't
-        be necessary since using React front-end, but it's here just in case. 
+        Generates a histogram of an array of `data`, which we assume is of prices. 
         '''
         # https://realpython.com/python-histograms/
         n, bins, patches = plt.hist(x=data, bins='auto', color='#0504aa',
@@ -447,61 +409,12 @@ class ReverbSearch():
         '''
         print(self.product_list[0])
 
-@app.route('/find_guitar', methods=['POST'])
-def generate_text():
-    '''
-    Example working request:
 
-    POST /find_guitar HTTP/1.1
-    Host: localhost:5000
-    Content-Type: application/json
-    Cache-Control: no-cache
-    Postman-Token: 3d7bd5be-5112-8ca5-4596-3ee645e9f715
-
-    {
-        "query_string": "fender stratocaster",
-        "additional_filters": {"color": "sunburst"},
-        "search_params": {"number_of_results": 22, "number_of_pages": 3},
-        "debug_keys": {"using_local": true, "print_links": true, "print_histogram": false}
-    }
-    '''
-    request_type = request.content_type
-    if request_type == 'application/json':
-        req_json = request.get_json()
-    elif 'multipart/form-data' in request_type:
-        req_json = request.form.to_dict()
-    else:
-        # WORKING
-        return_data = {'id': set_id, 'status': 'error', 'message': 'request content type incorrect', "request_type": request_type}
-        log_request(return_data, set_id)
-        return jsonify(return_data)
-
-    return_data = {}
-    return_data["request_json"] = req_json
-    
-    # PERFORM THE SEARCH
-    reverb_search = ReverbSearch(req_json["query_string"], additional_filters=req_json["additional_filters"], 
-        search_params=req_json["search_params"], debug_keys=req_json["debug_keys"])
-    # reverb_search = ReverbSearch(req_json["query_string"], number_of_results=50, number_of_pages=3, 
-    #     additional_filters={'color': 'sunburst'}, 
-    #     debug_keys={'using_local': True, 'print_links': True, 'print_histogram': False})
-
-    data = {}
-    data["filtered_listings"] = reverb_search.return_filtered_listings()
-
-    return_data["data"] = data
-    return_data["status"] = "success"
-
-    return jsonify(data)
-
-# if __name__ == "__main__":
-    # app.run(host="0.0.0.0", debug=True)
-
-# # 'color': 'sunburst'
 # ReverbSearch("fender stratocaster HSS floyd rose", search_params={'number_of_results':50, 'number_of_pages':3}, 
-#     additional_filters={'neck_material': ['maple'], 'color': 'sunburst'}, 
-#     debug_keys={'using_local': False, 'print_links': False, 'print_histogram': False}).calculate_avg_price()
+#     additional_filters={'neck_material': ['maple'], 'color': 'sunburst'}).find_undervalued_listings()
 
-a = CarousellSearch("charvel san dimas", additional_filters={"brand": "charvel", "model": "san dimas"})
-a.find_undervalued_listings()
-print(a.valid_product_list)
+# CarousellSearch("fender stratocaster", additional_filters={"brand": "fender", "model": "stratocaster", "color": "black"}).find_undervalued_listings()
+
+# CarousellSearch("charvel san dimas", additional_filters={"brand": "charvel", "model": "san dimas"}).find_undervalued_listings()
+# a.find_undervalued_listings()
+# print(a.valid_product_list)
